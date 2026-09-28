@@ -102,6 +102,44 @@ describe('McpClient', () => {
       }
     })
 
+    it.each([false, true])(
+      'removes partially registered tools after recovery with continueOnError=%s',
+      async (continueOnError) => {
+        // Failed MCP refreshes must not leave removed tools registered after recovery (#4569).
+        const server = new McpServer({ name: 'test', version: '1.0.0' })
+        const oldTool = server.registerTool('old', { inputSchema: {} }, async () => ({ content: [] }))
+        const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair()
+        await server.connect(serverTransport)
+        const client = new McpClient({ transport: clientTransport, prefix: 'server', continueOnError })
+        const localTool = createRandomTool('server_local')
+        const agent = new Agent({ model: new MockMessageModel(), tools: [localTool, client], printer: false })
+        const warnSpy = vi.spyOn(logger, 'warn').mockImplementation(() => {})
+        try {
+          await agent.initialize()
+          oldTool.remove()
+          const partialTool = server.registerTool('ephemeral', { inputSchema: {} }, async () => ({ content: [] }))
+          const invalidTool = server.registerTool('bad.name', { inputSchema: {} }, async () => ({ content: [] }))
+          const unreachedTool = server.registerTool('local', { inputSchema: {} }, async () => ({ content: [] }))
+          await vi.waitFor(() =>
+            expect(warnSpy).toHaveBeenCalledWith(expect.stringContaining('failed to refresh tools'))
+          )
+          expect(agent.tools.map((tool) => tool.name)).toEqual(['server_local', 'server_ephemeral'])
+
+          partialTool.remove()
+          invalidTool.remove()
+          unreachedTool.remove()
+          server.registerTool('current', { inputSchema: {} }, async () => ({ content: [] }))
+          await vi.waitFor(() =>
+            expect(agent.tools.map((tool) => tool.name)).toEqual(['server_local', 'server_current'])
+          )
+          expect(agent.tools[0]).toBe(localTool)
+        } finally {
+          await client.disconnect()
+          await server.close()
+        }
+      }
+    )
+
     it.each([
       { prefix: 'awslabs_aws-iac-mcp-server', skipped: 3 },
       { prefix: 'aws-iac', skipped: 0 },

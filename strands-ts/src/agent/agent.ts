@@ -817,8 +817,11 @@ export class Agent implements LocalAgent, InvokableAgent {
         client.onToolsChanged = (_oldTools, newTools): void => {
           const retained = client.prepareToolsForAgent(newTools)
           registeredNames.forEach((name) => this._toolRegistry.remove(name))
-          this._toolRegistry.addOrReplace(retained)
-          registeredNames = retained.map((tool) => tool.name)
+          registeredNames = []
+          for (const tool of retained) {
+            this._toolRegistry.addOrReplace([tool])
+            registeredNames.push(tool.name)
+          }
         }
       })
     )

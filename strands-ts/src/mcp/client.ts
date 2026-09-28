@@ -121,7 +121,7 @@ export interface McpClientOptions extends RuntimeConfig {
    */
   elicitationCallback?: ElicitationCallback
 
-  /** When true, connection failures and overlong prefixed tool names are skipped with warnings instead of throwing. */
+  /** When true, connection failures and overlong prefixed names during agent registration are skipped with warnings. */
   continueOnError?: boolean
 
   /** Called when the server emits a log message. Defaults to routing through the Strands logger. */
@@ -192,6 +192,7 @@ export class McpClient {
   private _toolFilters: McpToolFilters | undefined
   /** Server-side name of each listed tool, which differs from `tool.name` when a prefix is set. */
   private _serverToolNames = new WeakMap<McpTool, string>()
+  private _toolWarnings: string[] = []
   private _registeredToolNames = new Set<string>()
   private _onToolsChanged: ((oldTools: string[], newTools: McpTool[]) => void) | undefined
   private _refreshingTools = false
@@ -368,13 +369,11 @@ export class McpClient {
    * Lists the tools available on the server and returns them as executable McpTool instances.
    *
    * A prefix renames tools for the agent only; tools are always invoked, and matched by string and
-   * `RegExp` filters, under their server-side name. After filtering, prefixed names exceeding the registry
-   * limit are skipped with a warning when `continueOnError` is true; otherwise discovery throws.
+   * `RegExp` filters, under their server-side name. Direct discovery does not enforce agent registry limits.
    *
    * @param options - Overrides for the prefix and filters set on the client. An omitted field uses
    *                  the client's value; an explicit empty string or empty object disables it.
    * @returns A promise that resolves with an array of McpTool instances.
-   * @throws ToolValidationError When an included prefixed tool name exceeds the registry limit and `continueOnError` is false.
    */
   public async listTools(options?: McpListToolsOptions): Promise<McpTool[]> {
     await this.connect()
@@ -412,7 +411,7 @@ export class McpClient {
         })
         this._serverToolNames.set(tool, toolSpec.name)
 
-        if (this._shouldIncludeTool(tool, toolSpec.name, prefix, toolFilters)) tools.push(tool)
+        if (shouldIncludeTool(tool, toolSpec.name, toolFilters)) tools.push(tool)
       }
 
       cursor = result.nextCursor
@@ -427,24 +426,41 @@ export class McpClient {
     return tools
   }
 
-  private _shouldIncludeTool(
-    tool: McpTool,
-    serverToolName: string,
-    prefix: string | undefined,
-    filters: McpToolFilters | undefined
-  ): boolean {
-    if (filters?.allowed !== undefined && !matchesAnyMatcher(tool, serverToolName, filters.allowed)) return false
-    if (filters?.rejected !== undefined && matchesAnyMatcher(tool, serverToolName, filters.rejected)) return false
-    if (!prefix || tool.name.length <= MAX_TOOL_NAME_LENGTH) return true
+  /**
+   * Warnings from the latest completed preparation of tools for agent registration.
+   * Direct `listTools` calls do not change this snapshot. A successful preparation without omissions clears it.
+   */
+  get toolWarnings(): readonly string[] {
+    return this._toolWarnings
+  }
 
-    const message =
-      `server=<${this.serverVersion?.name ?? 'unknown'}>, tool=<${serverToolName}>, ` +
-      `name=<${tool.name}>, length=<${tool.name.length}>, limit=<${MAX_TOOL_NAME_LENGTH}> | ` +
-      'tool name exceeds registry limit | use a shorter prefix or tool name'
-    if (!this._continueOnError) throw new ToolValidationError(message)
+  /**
+   * Selects discovered tools that can be registered with an agent.
+   *
+   * @param tools - Tools discovered by this client, after prefixing and filtering.
+   * @returns Tools retained for registration.
+   * @throws ToolValidationError When a prefixed name exceeds the registry limit and `continueOnError` is false.
+   * @internal
+   */
+  prepareToolsForAgent(tools: McpTool[]): McpTool[] {
+    const warnings: string[] = []
+    const retained = tools.filter((tool) => {
+      const serverToolName = this._serverToolNames.get(tool)
+      if (!serverToolName || serverToolName === tool.name || tool.name.length <= MAX_TOOL_NAME_LENGTH) return true
 
-    logger.warn(`${message} | skipping tool (continueOnError)`)
-    return false
+      const message =
+        `server=<${this.serverVersion?.name ?? 'unknown'}>, tool=<${serverToolName}>, ` +
+        `name=<${tool.name}>, length=<${tool.name.length}>, limit=<${MAX_TOOL_NAME_LENGTH}> | ` +
+        'tool name exceeds registry limit | use a shorter prefix or tool name'
+      if (!this._continueOnError) throw new ToolValidationError(message)
+
+      const warning = `${message} | skipping tool (continueOnError)`
+      logger.warn(warning)
+      warnings.push(warning)
+      return false
+    })
+    this._toolWarnings = warnings
+    return retained
   }
 
   /**
@@ -522,6 +538,17 @@ export class McpClient {
 
     return (await this._client.callTool({ name: toolName, arguments: toolArgs }, options)) as JSONValue
   }
+}
+
+/**
+ * Decides whether a listed tool is exposed: allowed is applied first, then rejected, so a rejected
+ * tool is excluded even when also allowed.
+ */
+function shouldIncludeTool(tool: McpTool, serverToolName: string, filters: McpToolFilters | undefined): boolean {
+  if (!filters) return true
+  if (filters.allowed !== undefined && !matchesAnyMatcher(tool, serverToolName, filters.allowed)) return false
+  if (filters.rejected !== undefined && matchesAnyMatcher(tool, serverToolName, filters.rejected)) return false
+  return true
 }
 
 function matchesAnyMatcher(tool: McpTool, serverToolName: string, matchers: McpToolMatcher[]): boolean {

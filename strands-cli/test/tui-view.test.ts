@@ -8,8 +8,8 @@ import { snapshot } from './fixtures/chat-snapshot.js'
 import { ChatView } from '../src/tui/view/chat-view.js'
 import { Markdown } from '../src/tui/view/markdown.js'
 import { panelControlTarget, panelRowCapacity, revealPanelSelection } from '../src/tui/view/interaction.js'
-import { maxPermissionScroll, permissionLines } from '../src/tui/view/presentation.js'
-import { DEFAULT_CHAT_SETTINGS, type ChatPanel } from '../src/tui/chat/controller.js'
+import { maxDetailScroll, maxPermissionScroll, permissionLines } from '../src/tui/view/presentation.js'
+import { ChatController, DEFAULT_CHAT_SETTINGS, type ChatPanel } from '../src/tui/chat/controller.js'
 import { formatPermissionPanelBody, settingsRows } from '../src/tui/chat/panels.js'
 import { SETTINGS_CATEGORIES } from '../src/tui/settings.js'
 import { sanitizeTerminalText } from '../src/tui/terminal/sanitize.js'
@@ -20,6 +20,70 @@ afterEach(() => {
 })
 
 describe('ChatView', () => {
+  it.each([
+    [80, 24],
+    [120, 30],
+  ])('keeps MCP recovery advice and omission details accessible at %ix%i', async (width, height) => {
+    const names = [
+      'get_cloudformation_pre_deploy_validation_instructions',
+      'check_cloudformation_template_compliance',
+      'troubleshoot_cloudformation_deployment',
+    ]
+    const warnings = names.map(
+      (name) =>
+        `server=<aws-iac>, tool=<${name}>, name=<awslabs_aws-iac-mcp-server_${name}>, limit=<64> | ` +
+        'tool name exceeds registry limit | use a shorter prefix or tool name'
+    )
+    const controller = new ChatController(
+      {
+        id: 'fixture',
+        name: 'fixture',
+        protocol: 'strands',
+        cancel: () => undefined,
+        stream: async function* () {
+          yield* []
+          return { stopReason: 'endTurn' }
+        },
+      },
+      {
+        mcp: {
+          clients: [],
+          paths: [],
+          warnings,
+          configurationWarnings: [],
+          list: async () => [
+            {
+              name: 'awslabs.aws-iac-mcp-server',
+              transport: 'stdio',
+              target: 'uvx',
+              state: 'connected',
+              toolCount: 1,
+              skippedToolCount: warnings.length,
+              toolWarnings: warnings,
+            },
+          ],
+          dispose: async () => undefined,
+        },
+      }
+    )
+
+    await controller.submit('/mcp')
+    const list = renderView({ snapshot: controller.getSnapshot(), terminalWidth: width, terminalHeight: height })
+    expect(list).toContain('Use a shorter prefix.')
+    expect(list).toContain('Select a server')
+    expect(await controller.activatePanelRow(controller.getSnapshot().panel!.rows[0]!)).toBe(true)
+    const detail = controller.getSnapshot().panel!
+    expect(detail.kind).toBe('detail')
+    for (const warning of warnings) expect(detail.body).toContain(warning)
+    const render = (detailScroll: number): string =>
+      renderView({ snapshot: controller.getSnapshot(), terminalWidth: width, terminalHeight: height, detailScroll })
+    expect(render(0)).toContain('Use a shorter prefix')
+    expect(render(maxDetailScroll(detail, width, height))).toContain(names[2])
+    expect(controller.dismissPanel()).toBe(true)
+    expect(controller.getSnapshot().panel?.kind).toBe('mcp')
+    await controller.dispose()
+  })
+
   it('shows notices before the first turn below the startup banner', () => {
     const output = renderView({
       snapshot: snapshot({ notices: [{ id: 'notice-1', status: 'delivered', text: 'Nothing to compact yet' }] }),

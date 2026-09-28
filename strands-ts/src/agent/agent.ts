@@ -810,11 +810,15 @@ export class Agent implements LocalAgent, InvokableAgent {
     // Initialize MCP clients and register their tools
     await Promise.all(
       this._mcpClients.map(async (client) => {
-        const tools = await client.listTools()
+        const tools = client.prepareToolsForAgent(await client.listTools())
         this._toolRegistry.add(tools)
-        client.onToolsChanged = (oldTools, newTools): void => {
-          oldTools.forEach((name) => this._toolRegistry.remove(name))
-          this._toolRegistry.addOrReplace(newTools)
+        // Direct discovery and rejected refreshes must not change the agent's registered baseline.
+        let registeredNames = tools.map((tool) => tool.name)
+        client.onToolsChanged = (_oldTools, newTools): void => {
+          const retained = client.prepareToolsForAgent(newTools)
+          registeredNames.forEach((name) => this._toolRegistry.remove(name))
+          this._toolRegistry.addOrReplace(retained)
+          registeredNames = retained.map((tool) => tool.name)
         }
       })
     )

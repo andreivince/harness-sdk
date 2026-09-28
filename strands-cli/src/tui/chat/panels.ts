@@ -455,18 +455,20 @@ export function builtinToolRows(
 }
 
 export function mcpRows(servers: Awaited<ReturnType<LoadedMcp['list']>>): ChatPanelRow[] {
-  return servers.map((server) => ({
+  return servers.map((server, index) => ({
     label: server.name,
     description: [
       server.state,
       server.transport,
       server.toolCount === undefined ? undefined : `${server.toolCount} tools`,
+      server.skippedToolCount ? `${server.skippedToolCount} skipped` : undefined,
       server.target,
     ]
       .filter(Boolean)
       .join(' | '),
     section: server.state === 'connected' ? 'Connected' : 'Unavailable',
-    tone: server.state === 'failed' ? 'danger' : 'normal',
+    tone: server.state === 'failed' ? 'danger' : server.skippedToolCount ? 'warning' : 'normal',
+    ...(server.toolWarnings?.length ? { value: `mcp:${index}` } : {}),
   }))
 }
 
@@ -477,6 +479,12 @@ export function mcpOptions(
 ): Pick<ChatPanel, 'body' | 'searchable'> {
   const checkedPaths = paths.join(', ') || 'the configured paths'
   const warnings = messages.map((warning) => `Skipped: ${warning}`)
+  const body = [
+    ...(servers.some((server) => server.toolWarnings?.length)
+      ? ['Use a shorter prefix. Select a server for skipped tools.']
+      : []),
+    ...warnings,
+  ].join('\n')
   return servers.length === 0
     ? {
         body: [
@@ -486,5 +494,5 @@ export function mcpOptions(
           ...warnings,
         ].join('\n'),
       }
-    : { searchable: true, ...(warnings.length > 0 ? { body: warnings.join('\n') } : {}) }
+    : { searchable: true, ...(body ? { body } : {}) }
 }

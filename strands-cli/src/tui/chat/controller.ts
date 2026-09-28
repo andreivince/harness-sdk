@@ -100,6 +100,7 @@ export class ChatController implements ChatControllerApi {
   private _completedTurns: ChatTurn[] = []
   private readonly _panelStack: ChatPanel[] = []
   private readonly _skillDetails = new Map<string, SkillInfo>()
+  private readonly _mcpDetails = new Map<string, string>()
   private readonly _sessions: ChatSessionRuntime | undefined
 
   private _sessionCache: SessionList | undefined
@@ -191,6 +192,9 @@ export class ChatController implements ChatControllerApi {
       this._completedTurns.push(...projectMessages(options.initialMessages, backend.name))
     }
     this._nextTurn = this._completedTurns.length + 1
+    if (this._mcp?.warnings.length) {
+      this._addNotice('delivered', 'Some MCP tools or configuration were skipped. Use /mcp for details.')
+    }
     this._context = { ...(backend.contextUsage?.() ?? {}) }
     this._snapshot = this._createSnapshot()
     this._stopWatchingTasks = this._backend.watchTasks?.((tasks) => {
@@ -801,6 +805,15 @@ export class ChatController implements ChatControllerApi {
       case 'skills':
         await this.submit(`$${row.value}`)
         return true
+      case 'mcp': {
+        const body = this._mcpDetails.get(row.value)
+        const selected = this._panel.rows.find((candidate) => candidate.value === row.value)
+        if (!body || !selected) {
+          return false
+        }
+        this._pushPanel('detail', `MCP: ${selected.label}`, [], { body })
+        return true
+      }
       case 'tasks':
         return row.value === BACKGROUND_TASK_WAIT_TOGGLE
           ? this._toggleBackgroundTaskWaitMode()
@@ -1492,11 +1505,22 @@ export class ChatController implements ChatControllerApi {
       if (this._panel?.id !== loading.id) {
         return
       }
+      this._mcpDetails.clear()
+      servers.forEach((server, index) => {
+        if (server.toolWarnings?.length) {
+          this._mcpDetails.set(
+            `mcp:${index}`,
+            "Use a shorter prefix in this server's config. Keep it unique.\n" +
+              'Restart the CLI after editing the configuration.\n\nSkipped tools:\n' +
+              server.toolWarnings.join('\n\n')
+          )
+        }
+      })
       this._openPanel(
         'mcp',
         `MCP servers (${servers.length})`,
         mcpRows(servers),
-        mcpOptions(servers, this._mcp.paths, this._mcp.warnings)
+        mcpOptions(servers, this._mcp.paths, this._mcp.configurationWarnings ?? this._mcp.warnings)
       )
     } catch (error) {
       if (this._panel?.id === loading.id) {

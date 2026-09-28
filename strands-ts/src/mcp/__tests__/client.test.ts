@@ -433,7 +433,7 @@ describe('MCP Integration', () => {
         })
       const warnSpy = vi.spyOn(logger, 'warn').mockImplementation(() => {})
 
-      const tools = await lenientClient.listTools()
+      const tools = lenientClient.prepareToolsForAgent(await lenientClient.listTools())
 
       expect(tools.map((tool) => tool.name)).toEqual([`server_${boundaryName}`, 'server_short'])
       expect(warnSpy).toHaveBeenCalledTimes(1)
@@ -456,7 +456,7 @@ describe('MCP Integration', () => {
       strictSdkClient.listTools.mockResolvedValue({ tools: [{ name: serverName, inputSchema: {} }] })
       const warnSpy = vi.spyOn(logger, 'warn').mockImplementation(() => {})
 
-      const discovery = strictClient.listTools()
+      const discovery = strictClient.listTools().then((tools) => strictClient.prepareToolsForAgent(tools))
       await expect(discovery).rejects.toThrow(ToolValidationError)
       await expect(discovery).rejects.toThrow(/aws-iac.*get_cloudformation.*64.*prefix/)
       expect(warnSpy).not.toHaveBeenCalled()
@@ -500,7 +500,9 @@ describe('MCP Integration', () => {
       const warnSpy = vi.spyOn(logger, 'warn').mockImplementation(() => {})
 
       for (const matcher of [longName, /^a/, callback]) {
-        const tools = await filteredClient.listTools({ toolFilters: { rejected: [matcher] } })
+        const tools = filteredClient.prepareToolsForAgent(
+          await filteredClient.listTools({ toolFilters: { rejected: [matcher] } })
+        )
         expect(tools.map((tool) => tool.name)).toEqual(['server_short'])
       }
       expect(callback.mock.calls.map(([tool]) => tool.name)).toEqual([`server_${longName}`, 'server_short'])
@@ -517,11 +519,18 @@ describe('MCP Integration', () => {
       lenientSdkClient.listTools.mockResolvedValue({ tools: [{ name: 'weather', inputSchema: {} }] })
       const warnSpy = vi.spyOn(logger, 'warn').mockImplementation(() => {})
 
-      expect(await lenientClient.listTools()).toEqual([])
-      expect((await lenientClient.listTools({ prefix: 's' })).map((tool) => tool.name)).toEqual(['s_weather'])
-      expect((await lenientClient.listTools({ prefix: '' })).map((tool) => tool.name)).toEqual(['weather'])
-      expect(await lenientClient.listTools()).toEqual([])
+      expect(lenientClient.prepareToolsForAgent(await lenientClient.listTools())).toEqual([])
+      expect(
+        lenientClient.prepareToolsForAgent(await lenientClient.listTools({ prefix: 's' })).map((tool) => tool.name)
+      ).toEqual(['s_weather'])
+      expect(
+        lenientClient.prepareToolsForAgent(await lenientClient.listTools({ prefix: '' })).map((tool) => tool.name)
+      ).toEqual(['weather'])
+      expect(lenientClient.prepareToolsForAgent(await lenientClient.listTools())).toEqual([])
       expect(warnSpy).toHaveBeenCalledTimes(2)
+      expect(lenientClient.toolWarnings).toHaveLength(1)
+      lenientClient.prepareToolsForAgent(await lenientClient.listTools({ prefix: 's' }))
+      expect(lenientClient.toolWarnings).toEqual([])
     })
 
     it('surfaces tool annotations in the tool spec', async () => {
@@ -886,7 +895,7 @@ describe('MCP Integration', () => {
       expect(newTools.map((tool) => tool.name)).toEqual(['server_tool_a'])
     })
 
-    it('skips overlong names during refresh without losing surviving tools', async () => {
+    it('preserves overlong prefixed names for direct discovery subscribers', async () => {
       client = new McpClient({ transport: mockTransport, prefix: 'server', continueOnError: true })
       sdkClientMock = vi.mocked(Client).mock.results.at(-1)!.value
       sdkClientMock.listTools.mockResolvedValue({ tools: [{ name: 'old', inputSchema: {} }] })
@@ -894,48 +903,15 @@ describe('MCP Integration', () => {
       const onToolsChanged = vi.fn()
       client.onToolsChanged = onToolsChanged
       const warnSpy = vi.spyOn(logger, 'warn').mockImplementation(() => {})
-      sdkClientMock.listTools.mockResolvedValue({
-        tools: [
-          { name: 'a'.repeat(58), inputSchema: {} },
-          { name: 'new', inputSchema: {} },
-        ],
-      })
-
-      triggerToolsChanged()
-      await vi.waitFor(() => expect(onToolsChanged).toHaveBeenCalledTimes(1))
-      expect(onToolsChanged.mock.calls[0]![0]).toEqual(['server_old'])
-      expect((onToolsChanged.mock.calls[0]![1] as McpTool[]).map((tool) => tool.name)).toEqual(['server_new'])
-      expect(warnSpy).toHaveBeenCalledTimes(1)
-
       sdkClientMock.listTools.mockResolvedValue({ tools: [{ name: 'a'.repeat(58), inputSchema: {} }] })
-      triggerToolsChanged()
-      await vi.waitFor(() => expect(onToolsChanged).toHaveBeenCalledTimes(2))
-      expect(onToolsChanged.mock.calls[1]).toEqual([['server_new'], []])
-    })
 
-    it('preserves the prior tool list after a strict late-page overflow and recovers on refresh', async () => {
-      client = new McpClient({ transport: mockTransport, prefix: 'server' })
-      sdkClientMock = vi.mocked(Client).mock.results.at(-1)!.value
-      sdkClientMock.listTools.mockResolvedValue({ tools: [{ name: 'old', inputSchema: {} }] })
-      await client.listTools()
-      const onToolsChanged = vi.fn()
-      client.onToolsChanged = onToolsChanged
-      const warnSpy = vi.spyOn(logger, 'warn').mockImplementation(() => {})
-      sdkClientMock.listTools
-        .mockResolvedValueOnce({ tools: [{ name: 'partial', inputSchema: {} }], nextCursor: 'second' })
-        .mockResolvedValueOnce({ tools: [{ name: 'a'.repeat(58), inputSchema: {} }] })
-
-      triggerToolsChanged()
-      await vi.waitFor(() => expect(warnSpy).toHaveBeenCalledTimes(1))
-      expect(warnSpy.mock.calls[0]![0]).toContain('failed to refresh tools')
-      expect(onToolsChanged).not.toHaveBeenCalled()
-      expect(client.connectionState).toBe('connected')
-
-      sdkClientMock.listTools.mockResolvedValue({ tools: [{ name: 'recovered', inputSchema: {} }] })
       triggerToolsChanged()
       await vi.waitFor(() => expect(onToolsChanged).toHaveBeenCalledTimes(1))
       expect(onToolsChanged.mock.calls[0]![0]).toEqual(['server_old'])
-      expect((onToolsChanged.mock.calls[0]![1] as McpTool[]).map((tool) => tool.name)).toEqual(['server_recovered'])
+      expect((onToolsChanged.mock.calls[0]![1] as McpTool[]).map((tool) => tool.name)).toEqual([
+        `server_${'a'.repeat(58)}`,
+      ])
+      expect(warnSpy).not.toHaveBeenCalled()
     })
 
     it('does not throw when onToolsChanged is not set', async () => {

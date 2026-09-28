@@ -33,6 +33,7 @@ vi.mock('@modelcontextprotocol/sdk/client/stdio.js', async (importOriginal) => {
 })
 
 const temporaryDirectories: string[] = []
+type McpTools = Awaited<ReturnType<McpClient['listTools']>>
 
 afterEach(async () => {
   vi.restoreAllMocks()
@@ -43,6 +44,141 @@ afterEach(async () => {
 })
 
 describe('loadMcp', () => {
+  it('snapshots omission details with counts while another server is still loading', async () => {
+    let releaseSlow!: () => void
+    const slow = new Promise<void>((resolve) => {
+      releaseSlow = resolve
+    })
+    let finishFast!: () => void
+    const fast = new Promise<void>((resolve) => {
+      finishFast = resolve
+    })
+    const warning = 'Tool validation exceeds 64 characters; use a shorter prefix'
+    let currentWarnings = [warning]
+    const common = { connectionState: 'connected', connect: async () => undefined, disconnect: async () => undefined }
+    const clients = {
+      fast: {
+        ...common,
+        listTools: async () => [],
+        prepareToolsForAgent: () => {
+          finishFast()
+          return []
+        },
+        get toolWarnings(): readonly string[] {
+          return currentWarnings
+        },
+      },
+      slow: {
+        ...common,
+        listTools: async () => {
+          await slow
+          return []
+        },
+        prepareToolsForAgent: () => [],
+        toolWarnings: [],
+      },
+    }
+    vi.spyOn(McpClient, 'loadServers').mockImplementation(async (definitions) => [
+      clients[Object.keys(definitions)[0] as keyof typeof clients] as unknown as McpClient,
+    ])
+    const loaded = await loadMcp({
+      paths: [],
+      servers: { fast: { url: 'https://example.com/fast' }, slow: { url: 'https://example.com/slow' } },
+    })
+
+    try {
+      const listing = loaded.list(true)
+      await fast
+      currentWarnings = []
+      releaseSlow()
+      expect((await listing)[0]).toMatchObject({ toolCount: 0, skippedToolCount: 1, toolWarnings: [warning] })
+      expect(loaded.warnings).toEqual([])
+    } finally {
+      releaseSlow()
+      await loaded.dispose()
+    }
+  })
+
+  it('preserves discovery with SDK clients that have no agent-tool preparation', async () => {
+    const tools = [{ name: 'read' }] as McpTools
+    const client = {
+      connectionState: 'connected',
+      connect: vi.fn(async () => undefined),
+      listTools: vi.fn(async () => tools),
+      disconnect: vi.fn(async () => undefined),
+    }
+    vi.spyOn(McpClient, 'loadServers').mockResolvedValue([client as unknown as McpClient])
+    const loaded = await loadMcp({ paths: [], servers: { docs: { url: 'https://example.com/mcp' } } })
+
+    try {
+      expect(await loaded.list(true)).toEqual([
+        {
+          name: 'docs',
+          transport: 'streamable-http',
+          target: 'https://example.com/mcp',
+          state: 'connected',
+          toolCount: 1,
+        },
+      ])
+      expect(loaded.warnings).toEqual([])
+    } finally {
+      await loaded.dispose()
+    }
+  })
+
+  it('reports current agent-tool omissions by config name and clears them after recovery', async () => {
+    const discovered = [{ name: 'validation' }, { name: 'search' }] as McpTools
+    const warning = 'Tool \u001b[31mvalidation exceeds 64 characters; use a shorter prefix'
+    let prepared = { tools: [discovered[1]!], warnings: [warning] }
+    let currentWarnings: readonly string[] = []
+    const prepareToolsForAgent = vi.fn(() => {
+      currentWarnings = prepared.warnings
+      return prepared.tools
+    })
+    const client = {
+      connectionState: 'connected',
+      connect: vi.fn(async () => undefined),
+      listTools: vi.fn(async () => discovered),
+      prepareToolsForAgent,
+      get toolWarnings(): readonly string[] {
+        return currentWarnings
+      },
+      disconnect: vi.fn(async () => undefined),
+    }
+    vi.spyOn(McpClient, 'loadServers').mockResolvedValue([client as unknown as McpClient])
+    const loaded = await loadMcp({ paths: [], servers: { 'aws\u001b[31m-iac': { url: 'https://example.com/mcp' } } })
+
+    try {
+      const partial = {
+        name: 'aws-iac',
+        transport: 'streamable-http',
+        target: 'https://example.com/mcp',
+        state: 'connected',
+        toolCount: 1,
+        skippedToolCount: 1,
+        toolWarnings: ['Tool validation exceeds 64 characters; use a shorter prefix'],
+      }
+      expect(await loaded.list(true)).toEqual([partial])
+      expect(prepareToolsForAgent).toHaveBeenCalledWith(discovered)
+      expect(loaded.warnings).toEqual(['Server "aws-iac": Tool validation exceeds 64 characters; use a shorter prefix'])
+
+      expect(await loaded.list(true)).toEqual([partial])
+      expect(loaded.warnings).toHaveLength(1)
+
+      prepared = { tools: discovered, warnings: [] }
+      expect(await loaded.list(true)).toEqual([{ ...partial, toolCount: 2, skippedToolCount: 0, toolWarnings: [] }])
+      expect(loaded.warnings).toEqual([])
+
+      prepared = { tools: [], warnings: [warning] }
+      expect(await loaded.list(true)).toEqual([{ ...partial, toolCount: 0 }])
+      prepared = { tools: [], warnings: [] }
+      expect(await loaded.list(true)).toEqual([{ ...partial, toolCount: 0, skippedToolCount: 0, toolWarnings: [] }])
+      expect(loaded.warnings).toEqual([])
+    } finally {
+      await loaded.dispose()
+    }
+  })
+
   it('discovers conventional user and project configuration locations in stable precedence order', () => {
     expect(defaultMcpPaths().map((path) => path.replace(process.env.HOME!, '~'))).toEqual([
       '~/.claude.json',

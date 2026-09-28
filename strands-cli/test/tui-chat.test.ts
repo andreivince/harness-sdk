@@ -2051,5 +2051,60 @@ describe('ChatController', () => {
       body: expect.stringContaining('Checked: /Users/test/.strands/cli/mcp.json'),
     })
     expect(controller.getSnapshot().panel?.searchable).toBeUndefined()
+    expect(controller.getSnapshot().notices).toEqual([])
+  })
+
+  it('surfaces MCP omissions on startup and in the panel without duplicating notices', async () => {
+    const warning = 'Server "aws-iac": Tool validation exceeds 64 characters; use a shorter prefix'
+    let warnings = [warning]
+    let skippedToolCount = 1
+    const controller = new ChatController(backend(), {
+      mcp: {
+        clients: [],
+        paths: ['/workspace/.mcp.json'],
+        list: async () => [
+          {
+            name: 'aws-iac',
+            transport: 'stdio',
+            target: 'uvx',
+            state: 'connected',
+            toolCount: 0,
+            skippedToolCount,
+            toolWarnings: warnings,
+          },
+          { name: 'empty', transport: 'stdio', target: 'node', state: 'connected', toolCount: 0 },
+        ],
+        get warnings(): readonly string[] {
+          return warnings
+        },
+        configurationWarnings: [],
+        dispose: async () => undefined,
+      },
+    })
+
+    expect(controller.getSnapshot().notices).toEqual([
+      expect.objectContaining({ text: 'Some MCP tools or configuration were skipped. Use /mcp for details.' }),
+    ])
+    await controller.submit('/mcp')
+    expect(controller.getSnapshot().panel).toMatchObject({
+      kind: 'mcp',
+      body: 'Use a shorter prefix. Select a server for skipped tools.',
+      rows: [
+        { label: 'aws-iac', description: 'connected | stdio | 0 tools | 1 skipped | uvx', tone: 'warning' },
+        { label: 'empty', description: 'connected | stdio | 0 tools | node', tone: 'normal' },
+      ],
+    })
+    await controller.submit('/mcp')
+    expect(controller.getSnapshot().notices).toHaveLength(1)
+
+    warnings = []
+    skippedToolCount = 0
+    await controller.submit('/mcp')
+    expect(controller.getSnapshot().panel?.body).toBeUndefined()
+    expect(controller.getSnapshot().panel?.rows[0]).toMatchObject({
+      description: 'connected | stdio | 0 tools | uvx',
+      tone: 'normal',
+    })
+    await controller.dispose()
   })
 })

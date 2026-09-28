@@ -7,19 +7,30 @@ import { readMcpDefinitions, type LoadMcpOptions } from './mcp/config.js'
 
 export { defaultMcpPaths, projectMcpPaths, readMcpDefinitions, type LoadMcpOptions } from './mcp/config.js'
 
+// The CLI also supports SDK releases without agent-tool preparation.
+type McpTools = Awaited<ReturnType<McpClient['listTools']>>
+type CompatibleMcpClient = McpClient & {
+  readonly toolWarnings?: readonly string[]
+  prepareToolsForAgent?: (tools: McpTools) => McpTools
+}
+
 interface McpServerInfo {
   name: string
   transport: 'stdio' | 'sse' | 'streamable-http'
   target: string
   state: 'disconnected' | 'connected' | 'failed'
   toolCount?: number
+  skippedToolCount?: number
+  toolWarnings?: readonly string[]
 }
 
 export interface LoadedMcp {
   readonly clients: readonly McpClient[]
   readonly paths: readonly string[]
-  /** Configuration the harness skipped rather than failed on: problems in another tool's files. */
+  /** Configuration and tools the harness skipped rather than failed on. */
   readonly warnings: readonly string[]
+  /** Configuration warnings captured before connecting to servers. */
+  readonly configurationWarnings?: readonly string[]
   list(connect?: boolean): Promise<readonly McpServerInfo[]>
   dispose(): Promise<void>
 }
@@ -37,7 +48,15 @@ export async function loadMcp(options: LoadMcpOptions = {}): Promise<LoadedMcp> 
   return {
     clients,
     paths: paths.map(sanitizeTerminalText),
-    warnings: warnings.map(sanitizeTerminalText),
+    configurationWarnings: warnings.map(sanitizeTerminalText),
+    get warnings(): readonly string[] {
+      return [
+        ...warnings,
+        ...[...clientsByName].flatMap(([name, client]) =>
+          (client?.toolWarnings ?? []).map((warning) => `Server "${name}": ${warning}`)
+        ),
+      ].map(sanitizeTerminalText)
+    },
     async list(connect = false): Promise<readonly McpServerInfo[]> {
       return Promise.all(
         Object.entries(definitions).map(async ([name, definition]) => {
@@ -45,13 +64,19 @@ export async function loadMcp(options: LoadMcpOptions = {}): Promise<LoadedMcp> 
           if (connect && client) {
             await client.connect()
           }
-          const tools = connect && client?.connectionState === 'connected' ? await client.listTools() : undefined
+          const discoveredTools =
+            connect && client?.connectionState === 'connected' ? await client.listTools() : undefined
+          const tools = discoveredTools
+            ? (client?.prepareToolsForAgent?.(discoveredTools) ?? discoveredTools)
+            : undefined
+          const toolWarnings = client?.toolWarnings?.map(sanitizeTerminalText)
           return {
             name: sanitizeTerminalText(name),
             transport: transportType(definition),
             target: sanitizeTerminalText(definition.command ?? definition.url ?? 'invalid configuration'),
             state: client?.connectionState ?? 'failed',
             ...(tools ? { toolCount: tools.length } : {}),
+            ...(tools && toolWarnings ? { skippedToolCount: toolWarnings.length, toolWarnings } : {}),
           }
         })
       )
@@ -73,7 +98,7 @@ const CLIENT_DEFAULTS = { applicationVersion: HARNESS_VERSION }
  * stderr, which would print server diagnostics over the terminal UI), so this path derives the prefix
  * itself with the SDK's `[^A-Za-z0-9_-]` -> `_` sanitization.
  */
-async function createClient(name: string, definition: McpServerConfig): Promise<McpClient | undefined> {
+async function createClient(name: string, definition: McpServerConfig): Promise<CompatibleMcpClient | undefined> {
   if (transportType(definition) !== 'stdio' || !definition.command) {
     const [client] = await McpClient.loadServers({ [name]: definition }, CLIENT_DEFAULTS, {
       prefixWithServerName: true,

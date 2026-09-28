@@ -42,7 +42,7 @@ export interface McpServerConfig {
   toolFilters?: SerializableMcpToolFilters
   /** When true, this server is skipped during loadServers. */
   disabled?: boolean
-  /** When true, config or connection failures skip this server instead of throwing. */
+  /** When true, skip config/connection failures and overlong prefixed tools with warnings instead of throwing. */
   continueOnError?: boolean
   /**
    * Task-augmented tool execution configuration (experimental).

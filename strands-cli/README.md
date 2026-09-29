@@ -323,23 +323,6 @@ the server's config key as the prefix (a `slack` server's `search` becomes `slac
 outside `[A-Za-z0-9_-]` in the key become `_`). Set `prefix` on a server to choose the namespace, or
 `""` to expose its tools under their original names.
 
-If prefixed tool names exceed 64 characters, `continueOnError: true` skips those tools and `/mcp`
-shows the omissions. Select an affected server to read the full diagnostics. Restore the tools
-by setting a shorter, unique prefix in that server's complete
-definition, then restart the CLI. For example:
-
-```json
-{
-  "mcpServers": {
-    "awslabs.aws-iac-mcp-server": {
-      "command": "uvx",
-      "args": ["awslabs.aws-iac-mcp-server@latest"],
-      "prefix": "aws-iac"
-    }
-  }
-}
-```
-
 When MCP discovery is enabled, user configuration is discovered in this order:
 
 1. `~/.claude.json` (user servers, plus the current workspace's local servers and opt-outs)

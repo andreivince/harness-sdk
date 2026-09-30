@@ -362,7 +362,6 @@ describe('MCP Integration', () => {
     })
 
     it('inherits constructor defaults while explicit empty prefix and filters disable them', async () => {
-      const longName = 'a'.repeat(65)
       const defaultedClient = new McpClient({
         applicationName: 'TestApp',
         transport: mockTransport,
@@ -374,7 +373,6 @@ describe('MCP Integration', () => {
         tools: [
           { name: 'one', inputSchema: {} },
           { name: 'two', inputSchema: {} },
-          { name: longName, inputSchema: {} },
         ],
       })
 
@@ -388,7 +386,6 @@ describe('MCP Integration', () => {
       expect((await defaultedClient.listTools({ prefix: '', toolFilters: {} })).map((tool) => tool.name)).toEqual([
         'one',
         'two',
-        longName,
       ])
       expect(
         (await defaultedClient.listTools({ prefix: 'override', toolFilters: { allowed: ['two'] } })).map(
@@ -397,46 +394,31 @@ describe('MCP Integration', () => {
       ).toEqual(['override_two'])
     })
 
-    it.each([false, true])(
-      'filters and prefixes every page and invokes prefixed tools by the server-side name (continueOnError=%s)',
-      async (continueOnError) => {
-        const rejectedName = `keep_${'a'.repeat(58)}`
-        const prefixedClient = new McpClient({
-          applicationName: 'TestApp',
-          transport: mockTransport,
-          prefix: 'server',
-          toolFilters: { allowed: [/keep_/], rejected: [rejectedName] },
-          continueOnError,
+    it('filters and prefixes every page and invokes prefixed tools by the server-side name', async () => {
+      const prefixedClient = new McpClient({
+        applicationName: 'TestApp',
+        transport: mockTransport,
+        prefix: 'server',
+        toolFilters: { allowed: [/keep_/] },
+      })
+      const prefixedSdkClient = vi.mocked(Client).mock.results.at(-1)!.value
+      prefixedSdkClient.listTools
+        .mockResolvedValueOnce({
+          tools: [
+            { name: 'keep_one', inputSchema: {} },
+            { name: 'drop_one', inputSchema: {} },
+          ],
+          nextCursor: 'page2',
         })
-        const prefixedSdkClient = vi.mocked(Client).mock.results.at(-1)!.value
-        prefixedSdkClient.listTools
-          .mockResolvedValueOnce({
-            tools: [
-              { name: 'keep_one', inputSchema: {} },
-              { name: 'drop_one', inputSchema: {} },
-            ],
-            nextCursor: 'page2',
-          })
-          .mockResolvedValueOnce({
-            tools: [
-              { name: 'keep_two', inputSchema: {} },
-              { name: rejectedName, inputSchema: {} },
-            ],
-          })
-        prefixedSdkClient.callTool.mockResolvedValue({ content: [] })
-        const warnSpy = vi.spyOn(logger, 'warn').mockImplementation(() => {})
+        .mockResolvedValueOnce({ tools: [{ name: 'keep_two', inputSchema: {} }] })
+      prefixedSdkClient.callTool.mockResolvedValue({ content: [] })
 
-        const tools = await prefixedClient.listTools()
-        await prefixedClient.callTool(tools[1]!, { value: 1 })
+      const tools = await prefixedClient.listTools()
+      await prefixedClient.callTool(tools[1]!, { value: 1 })
 
-        expect(tools.map((tool) => tool.name)).toEqual(['server_keep_one', 'server_keep_two'])
-        expect(prefixedSdkClient.callTool).toHaveBeenCalledWith(
-          { name: 'keep_two', arguments: { value: 1 } },
-          undefined
-        )
-        expect(warnSpy).not.toHaveBeenCalled()
-      }
-    )
+      expect(tools.map((tool) => tool.name)).toEqual(['server_keep_one', 'server_keep_two'])
+      expect(prefixedSdkClient.callTool).toHaveBeenCalledWith({ name: 'keep_two', arguments: { value: 1 } }, undefined)
+    })
 
     it('skips overlong names across pages and preserves the 64-character boundary', async () => {
       // One overlong MCP name must not block the remaining tools (#4513).

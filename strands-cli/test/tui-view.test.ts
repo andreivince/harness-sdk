@@ -747,6 +747,7 @@ describe('ChatView', () => {
     expect(sanitizeTerminalText(fallback).replace(/\s/gu, '')).toContain('(https://strandsagents.com)')
   })
 
+  // Display tabs keep rendered terminal rows aligned (#4839).
   it.each([
     ['fenced code', '```\n1\tMARKER\n2\n```', ' 1    MARKER', '2'],
     ['tab-indented code', ' \t1\tMARKER\n \t2', ' 1    MARKER', '2'],
@@ -769,6 +770,7 @@ describe('ChatView', () => {
     }
   })
 
+  // Both tool-result display modes preserve terminal row geometry (#4839).
   it.each(['compact', 'full'] as const)(
     'renders tool-result tabs in %s mode without adding terminal rows',
     async (toolOutput) => {

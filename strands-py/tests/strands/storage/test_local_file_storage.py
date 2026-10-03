@@ -278,6 +278,7 @@ class TestLocalFileStorage:
     @pytest.mark.asyncio
     @pytest.mark.parametrize("failure_source", ["host_scan", "host_stat", "sandbox"])
     async def test_list_error_raises_storage_error(self, tmp_path, monkeypatch, failure_source):
+        # Listing access failures surface as StorageError (#4837).
         error = PermissionError("forbidden")
         sandbox = None
         if failure_source == "sandbox":

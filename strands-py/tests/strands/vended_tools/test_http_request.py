@@ -297,6 +297,7 @@ class TestTimeout:
     )
     @pytest.mark.asyncio
     async def test_request_timeout_respects_client_phase_limits(self, client_timeout, model_timeout, exp_timeout):
+        # Operator-set timeout phase limits remain effective (#4838).
         def handler(request: httpx.Request) -> httpx.Response:
             tru_timeout = request.extensions["timeout"]
             assert tru_timeout == exp_timeout

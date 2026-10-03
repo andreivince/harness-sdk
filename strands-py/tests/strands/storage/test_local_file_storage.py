@@ -72,8 +72,11 @@ class TestLocalFileStorage:
 
     @pytest.mark.asyncio
     async def test_list_empty_dir(self, storage):
-        assert await storage.list("") == []
-        assert await storage.namespace("missing").list("") == []
+        tru_keys = await storage.list("")
+        exp_keys = []
+        assert tru_keys == exp_keys
+        tru_keys = await storage.namespace("missing").list("")
+        assert tru_keys == exp_keys
 
     @pytest.mark.asyncio
     async def test_rejects_path_traversal(self, storage):
@@ -291,7 +294,9 @@ class TestLocalFileStorage:
         storage = LocalFileStorage(str(tmp_path) + "/", sandbox=sandbox)
         with pytest.raises(StorageError, match="Failed to list keys") as exc_info:
             await storage.list("")
-        assert exc_info.value.__cause__ is error
+        tru_cause = exc_info.value.__cause__
+        exp_cause = error
+        assert tru_cause is exp_cause
 
     @pytest.mark.asyncio
     async def test_write_atomic_cleanup_on_replace_failure(self, tmp_path, monkeypatch):
